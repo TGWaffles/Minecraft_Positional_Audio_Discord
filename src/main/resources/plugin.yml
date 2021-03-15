@@ -1,0 +1,3 @@
+name: PositionalDiscord
+main: me.tgwaffles.positionaldiscord.PositionalDiscord
+version: 1.0
