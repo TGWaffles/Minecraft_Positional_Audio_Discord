@@ -89,7 +89,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
             toSet = (angle - 90) / 90;
         }
 //        double distanceMultiplier = (180 - player.getLocation().distance(loc)) / 180;
-        double distanceMultiplier = Math.min(1, -Math.log(player.getLocation().distance(loc) / 180));
+        double distanceMultiplier = Math.min(1, Math.max(0.001, 10/player.getLocation().distance(loc)));
         if (distanceMultiplier < 0) {
             distanceMultiplier = 0;
         }
