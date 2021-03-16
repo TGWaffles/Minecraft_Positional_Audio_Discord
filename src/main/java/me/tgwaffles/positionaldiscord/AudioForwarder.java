@@ -17,25 +17,28 @@ package me.tgwaffles.positionaldiscord;/*
 import net.dv8tion.jda.api.audio.AudioReceiveHandler;
 import net.dv8tion.jda.api.audio.AudioSendHandler;
 import net.dv8tion.jda.api.audio.UserAudio;
+import net.dv8tion.jda.api.audio.hooks.ConnectionListener;
+import net.dv8tion.jda.api.audio.hooks.ConnectionStatus;
 import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.events.message.guild.GuildMessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.managers.AudioManager;
 import org.bukkit.entity.Player;
-import sun.awt.image.ImageWatched;
+import org.jetbrains.annotations.NotNull;
 
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
 
 public class AudioForwarder extends ListenerAdapter
 {
     PositionalDiscord plugin;
-    private final HashMap<String, UUID> idsToUUIDs = new HashMap<>();
-    private final HashMap<UUID, String> uuidsToIds = new HashMap<>();
-    public final HashMap<String, LinkedList<byte[]>> userToLinkedList = new HashMap<>();
-    public final HashMap<String, Integer> userToAmounts = new HashMap<>();
-    public final HashMap<String, ArrayList<String>> usersInQueue = new HashMap<>();
+    private final ConcurrentHashMap<String, UUID> idsToUUIDs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, String> uuidsToIds = new ConcurrentHashMap<>();
+    public final ConcurrentHashMap<String, Queue<byte[]>> inputQueueMap = new ConcurrentHashMap<>();
+    public final ConcurrentHashMap<String, Queue<byte[]>> outputQueueMap = new ConcurrentHashMap<>();
 
     public AudioForwarder(PositionalDiscord caller) {
         plugin = caller;
@@ -56,7 +59,24 @@ public class AudioForwarder extends ListenerAdapter
         } else if (content.startsWith("!engage ")) {
             String userName = content.substring("!engage ".length());
             registerUser(event, userName);
+        } else if (content.startsWith("!close")) {
+            closeGuild(event.getGuild());
         }
+    }
+
+    public void closeGuild(Guild guild) {
+        AudioManager manager = guild.getAudioManager();
+        AudioHandler handler = (AudioHandler) manager.getReceivingHandler();
+        if (handler != null) {
+            String handlerId = handler.receiveUserId;
+            outputQueueMap.remove(handlerId);
+            inputQueueMap.remove(handlerId);
+            UUID playerUUID = idsToUUIDs.remove(handlerId);
+            uuidsToIds.remove(playerUUID);
+            handler.close();
+        }
+        manager.closeAudioConnection();
+
     }
 
     private void registerUser(GuildMessageReceivedEvent event, String userName) {
@@ -65,10 +85,12 @@ public class AudioForwarder extends ListenerAdapter
             onUnknownUser(event.getChannel(), userName);
             return;
         }
+        String discordUserId = event.getAuthor().getId();
+        inputQueueMap.put(discordUserId, new ConcurrentLinkedQueue<>());
+        outputQueueMap.put(discordUserId, new ConcurrentLinkedQueue<>());
         UUID uuid = player.getUniqueId();
-        uuidsToIds.put(uuid, event.getAuthor().getId());
-        idsToUUIDs.put(event.getAuthor().getId(), uuid);
-        userToLinkedList.put(event.getAuthor().getId(), new LinkedList<>());
+        uuidsToIds.put(uuid, discordUserId);
+        idsToUUIDs.put(discordUserId, uuid);
         connectToChannel(event);
     }
 
@@ -155,10 +177,8 @@ public class AudioForwarder extends ListenerAdapter
         // Get an audio manager for this guild, this will be created upon first use for each guild
         AudioManager audioManager = guild.getAudioManager();
 
-        audioManager.closeAudioConnection();
-
         // Create our Send/Receive handler for the audio connection
-        AudioHandler handler = new AudioHandler(this, callerId);
+        AudioHandler handler = new AudioHandler(this, callerId, channel.getGuild());
 
         // The order of the following instructions does not matter!
 
@@ -166,11 +186,13 @@ public class AudioForwarder extends ListenerAdapter
         audioManager.setSendingHandler(handler);
         // Set the receiving handler to the same echo system, otherwise we can't echo anything
         audioManager.setReceivingHandler(handler);
+
+        audioManager.setConnectionListener(handler);
         // Connect to the voice channel
         audioManager.openAudioConnection(channel);
     }
 
-    public static class AudioHandler implements AudioSendHandler, AudioReceiveHandler
+    public static class AudioHandler implements AudioSendHandler, AudioReceiveHandler, ConnectionListener
     {
         /*
             All methods in this class are called by JDA threads when resources are available/ready for processing.
@@ -181,10 +203,15 @@ public class AudioForwarder extends ListenerAdapter
          */
         private final AudioForwarder forwarder;
         private final String receiveUserId;
-        public AudioHandler(AudioForwarder caller, String callerId) {
+        private final Timer timer;
+        public final Guild guild;
+        public AudioHandler(AudioForwarder caller, String callerId, Guild guild) {
+            this.guild = guild;
             forwarder = caller;
             receiveUserId = callerId;
             forwarder.plugin.log.log(Level.INFO, "registered audio");
+            timer = new Timer();
+            timer.schedule(new UpdateQueue(this), 0L, 20L);
         }
 
         /* Receive Handling */
@@ -195,6 +222,29 @@ public class AudioForwarder extends ListenerAdapter
             return false;
         }
 
+        @Override
+        public void onPing(long ping) { }
+
+        @Override
+        public void onStatusChange(@NotNull ConnectionStatus status) {
+            List<ConnectionStatus> disconnectedStatuses = Arrays.asList(ConnectionStatus.DISCONNECTED_CHANNEL_DELETED,
+                    ConnectionStatus.DISCONNECTED_AUTHENTICATION_FAILURE, ConnectionStatus.DISCONNECTED_LOST_PERMISSION,
+                    ConnectionStatus.DISCONNECTED_KICKED_FROM_CHANNEL,
+                    ConnectionStatus.DISCONNECTED_REMOVED_DURING_RECONNECT,
+                    ConnectionStatus.DISCONNECTED_REMOVED_FROM_GUILD);
+            if (disconnectedStatuses.contains(status)) {
+                forwarder.closeGuild(guild);
+            }
+        }
+
+
+        @Override
+        public void onUserSpeaking(@NotNull User user, boolean speaking) { }
+
+        public void close() {
+            timer.cancel();
+        }
+
         //        Disable per-user audio since we want to echo the entire channel and not specific users.
         @Override // give audio separately for each user that is speaking
         public boolean canReceiveUser()
@@ -203,114 +253,28 @@ public class AudioForwarder extends ListenerAdapter
             return true;
         }
 
-        public byte[] doRegularMultiplier(byte[] newData, double[] positionalMultiplier) {
-            byte[] combinedAudio;
-            byte[] positionalisedData = new byte[newData.length];
-            for (int i=0; i<newData.length; i+=2) {
-                short buf1 = newData[i];
-                short buf2 = newData[i + 1];
-                buf1 = (short) ((buf1 & 0xff) << 8);
-                buf2 = (short) (buf2 & 0xff);
-                short resultantShort = (short) (buf1 | buf2);
-                if (i % 4 == 0) {
-                    resultantShort = (short) (resultantShort * positionalMultiplier[0]);
-                } else {
-                    resultantShort = (short) (resultantShort * positionalMultiplier[1]);
-                }
-                positionalisedData[i] = (byte) (resultantShort >> 8);
-                positionalisedData[i + 1] = (byte) (resultantShort);
-            }
-            combinedAudio = positionalisedData;
-            return combinedAudio;
-        }
-
-        public void combineAudio(String userId, byte[] newData, double[] positionalMultiplier, String inputId) {
-            Integer previousAmount = forwarder.userToAmounts.get(userId);
-            if (previousAmount == null) {
-                previousAmount = 0;
-            }
-            previousAmount += 1;
-            forwarder.userToAmounts.put(userId, previousAmount);
-            LinkedList<byte[]> userList = forwarder.userToLinkedList.get(userId);
-            byte[] combinedAudio;
-            if (userList.size() > 10) {
-                return;
-            } else if (userList.size() == 0) {
-                combinedAudio = doRegularMultiplier(newData, positionalMultiplier);
-            } else {
-                byte[] oldAudio;
-                ArrayList<String> usersInTheQueue = forwarder.usersInQueue.get(userId);
-                if (usersInTheQueue != null && usersInTheQueue.contains(inputId)) {
-                    forwarder.userToAmounts.put(userId, 1);
-                    combinedAudio = doRegularMultiplier(newData, positionalMultiplier);
-                    usersInTheQueue.clear();
-                    usersInTheQueue.add(inputId);
-                    forwarder.usersInQueue.put(userId, usersInTheQueue);
-                } else {
-                    try {
-                        oldAudio = userList.removeLast();
-                        combinedAudio = new byte[oldAudio.length];
-                        double oldMultiplier = (double) (previousAmount - 1) / previousAmount;
-                        double leftPositionalMultiplier = positionalMultiplier[0] / previousAmount;
-                        double rightPositionalMultiplier = positionalMultiplier[1] / previousAmount;
-                        for (int i=0; i<oldAudio.length; i+=2) {
-                            short buf1 = oldAudio[i];
-                            short buf2 = oldAudio[i + 1];
-                            buf1 = (short) ((buf1 & 0xff) << 8);
-                            buf2 = (short) (buf2 & 0xff);
-                            short oldShort = (short) (buf1 | buf2);
-                            buf1 = newData[i];
-                            buf2 = newData[i + 1];
-                            buf1 = (short) ((buf1 & 0xff) << 8);
-                            buf2 = (short) (buf2 & 0xff);
-                            short newShort = (short) (buf1 | buf2);
-                            short combinedShort;
-                            if (i % 4 == 0) {
-                                combinedShort = (short) (oldShort * oldMultiplier + newShort * leftPositionalMultiplier);
-                            } else {
-                                combinedShort = (short) (oldShort * oldMultiplier + newShort * rightPositionalMultiplier);
-                            }
-                            combinedAudio[i] = (byte) (combinedShort >> 8);
-                            combinedAudio[i + 1] = (byte) (combinedShort);
-                        }
-                    } catch (NoSuchElementException e) {
-                        combinedAudio = doRegularMultiplier(newData, positionalMultiplier);
-                    }
-                }
-
-            }
-            userList.addLast(combinedAudio);
-        }
-
         public void addToQueues(String inputUserID, byte[] inputData) {
             UUID playerUUID = forwarder.idsToUUIDs.get(inputUserID);
             if (playerUUID == null) {
                 return;
             }
             Player player = forwarder.plugin.getServer().getPlayer(playerUUID);
-            if (player == null) {
-                return;
-            }
-            ArrayList<Player> nearbyPlayers = forwarder.plugin.nearbyPlayers.get(player);
-            if (nearbyPlayers == null) {
-                return;
-            }
-            for (Player nearbyPlayer : nearbyPlayers) {
-                String discordId = forwarder.uuidsToIds.get(nearbyPlayer.getUniqueId());
-                if (discordId == null) {
-                    continue;
-                }
-                double[] multiplication = forwarder.plugin.getAngularVolume(nearbyPlayer, player);
-                combineAudio(discordId, inputData, multiplication, inputUserID);
-            }
+
         }
 
         @Override
         public void handleUserAudio(UserAudio userAudio) {
             String userId = userAudio.getUser().getId();
-            addToQueues(userId, userAudio.getAudioData(1));
+            Queue<byte[]> inputQueue = forwarder.inputQueueMap.get(userId);
+            if (inputQueue == null) {
+                return;
+            }
+            if (inputQueue.size() < 10) {
+                inputQueue.add(userAudio.getAudioData(1));
+            } if (inputQueue.size() > 2) {
+                inputQueue.remove();
+            }
         }
-
 
         /* Send Handling */
 
@@ -318,23 +282,14 @@ public class AudioForwarder extends ListenerAdapter
         public boolean canProvide()
         {
             // If we have something in our buffer we can provide it to the send system
-            LinkedList<byte[]> userList = forwarder.userToLinkedList.get(receiveUserId);
-            if (userList == null) {
-                return false;
-            }
-            return userList.size() != 0;
+            return !forwarder.outputQueueMap.get(receiveUserId).isEmpty();
         }
 
         @Override
         public ByteBuffer provide20MsAudio()
         {
-            byte[] data;
             // use what we have in our buffer to send audio as PCM
-            try {
-                data = forwarder.userToLinkedList.get(receiveUserId).removeFirst();
-            } catch (NoSuchElementException e) {
-                data = null;
-            }
+            byte[] data = forwarder.outputQueueMap.get(receiveUserId).poll();
             return data == null ? null : ByteBuffer.wrap(data); // Wrap this in a java.nio.ByteBuffer
         }
 
@@ -343,6 +298,131 @@ public class AudioForwarder extends ListenerAdapter
         {
             // since we send audio that is received from discord we don't have opus but PCM
             return false;
+        }
+    }
+
+    public static class AudioAndMultiplier {
+        private final byte[] audioData;
+        private final double[] multiplier;
+
+        public AudioAndMultiplier (byte[] data, double[] multiplier) {
+            this.audioData = data;
+            this.multiplier = multiplier;
+        }
+
+        public byte[] getData() {
+            return audioData;
+        }
+
+        public double[] getMultiplier() {
+            return multiplier;
+        }
+
+        public int length() {
+            return audioData.length;
+        }
+    }
+
+    public static class UpdateQueue extends TimerTask {
+        AudioHandler handler;
+        PositionalDiscord plugin;
+        AudioForwarder forwarder;
+        String outputUserId;
+        UUID outputUserUUID;
+        Queue<byte[]> outputQueue;
+        HashMap<String, byte[]> lastKnownBytesMap = new HashMap<>();
+
+        public UpdateQueue(AudioHandler caller) {
+            handler = caller;
+            plugin = handler.forwarder.plugin;
+            forwarder = handler.forwarder;
+            outputUserId = handler.receiveUserId;
+            outputQueue = forwarder.outputQueueMap.get(outputUserId);
+            outputUserUUID = forwarder.idsToUUIDs.get(outputUserId);
+        }
+
+        public void run() {
+            if (outputQueue.size() > 10) {
+                return;
+            }
+            Player player = plugin.getServer().getPlayer(outputUserUUID);
+            if (player == null) {
+                return;
+            }
+            ArrayList<Player> nearbyPlayers = plugin.nearbyPlayers.get(player);
+            if (nearbyPlayers == null) {
+                return;
+            }
+            ArrayList<AudioAndMultiplier> combining = new ArrayList<>();
+            for (Player nearbyPlayer : nearbyPlayers) {
+                String discordId = forwarder.uuidsToIds.get(nearbyPlayer.getUniqueId());
+                if (discordId == null) {
+                    continue;
+                }
+                Queue<byte[]> otherUserQueue = forwarder.inputQueueMap.get(discordId);
+                if (otherUserQueue == null || otherUserQueue.isEmpty()) {
+                    return;
+                }
+                byte[] data = otherUserQueue.peek();
+                if (data == null) {
+                    continue;
+                }
+                byte[] lastKnownBytes = lastKnownBytesMap.get(discordId);
+                if (lastKnownBytes != null) {
+                    if (data == lastKnownBytes) {
+                        otherUserQueue.remove();
+                        if (otherUserQueue.isEmpty()) {
+                            continue;
+                        }
+                        data = otherUserQueue.peek();
+                        if (data == null) {
+                            continue;
+                        }
+                    }
+                }
+                double[] multiplication = plugin.getAngularVolume(nearbyPlayer, player);
+                lastKnownBytesMap.put(discordId, data);
+                combining.add(new AudioAndMultiplier(data, multiplication));
+            }
+            if (!combining.isEmpty()) {
+                byte[] combinedData = new byte[3840];
+                int maxLength = combining.stream().mapToInt(AudioAndMultiplier::length).max().getAsInt();
+                int sample;
+                short toAdd;
+                double multiplier;
+                for (int i=0; i<maxLength; i+=2) {
+                    sample = 0;
+                    for (Iterator<AudioAndMultiplier> iterator = combining.iterator(); iterator.hasNext(); ) {
+                        AudioAndMultiplier audioInfo = iterator.next();
+                        byte[] audio = audioInfo.getData();
+                        if (i < audio.length - 1) {
+                            short buf1 = audio[i];
+                            short buf2 = audio[i + 1];
+                            buf1 = (short) ((buf1 & 0xff) << 8);
+                            buf2 = (short) (buf2 & 0xff);
+                            short currentShort = (short) (buf1 | buf2);
+                            if (i % 4 == 0) {
+                                multiplier = audioInfo.getMultiplier()[0];
+                            } else {
+                                multiplier = audioInfo.getMultiplier()[1];
+                            }
+                            sample += (int) (currentShort * multiplier);
+                        } else {
+                            iterator.remove();
+                        }
+                    }
+                    if (sample > Short.MAX_VALUE) {
+                        toAdd = Short.MAX_VALUE;
+                    } else if (sample < Short.MIN_VALUE) {
+                        toAdd = Short.MIN_VALUE;
+                    } else {
+                        toAdd = (short) sample;
+                    }
+                    combinedData[i] = (byte) (toAdd >> 8);
+                    combinedData[i + 1] = (byte) (toAdd);
+                }
+                outputQueue.add(combinedData);
+            }
         }
     }
 }
