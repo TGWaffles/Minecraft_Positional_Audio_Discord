@@ -37,7 +37,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                 GatewayIntent.GUILD_VOICE_STATES
         );
         try {
-            api = JDABuilder.create(this.getConfig().getString("discordToken"), intents)           // Use provided token from command line arguments
+            api = JDABuilder.createDefault(this.getConfig().getString("discordToken"), intents)           // Use provided token from command line arguments
                     .addEventListeners(new AudioForwarder(this))  // Start listening with this listener
                     .setActivity(Activity.listening("positional audio!")) // Inform users that we are jammin' it out
                     .setStatus(OnlineStatus.DO_NOT_DISTURB)     // Please don't disturb us while we're jammin'
@@ -88,7 +88,8 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
         } else {
             toSet = (angle - 90) / 90;
         }
-        double distanceMultiplier = (180 - player.getLocation().distance(loc)) / 180;
+//        double distanceMultiplier = (180 - player.getLocation().distance(loc)) / 180;
+        double distanceMultiplier = Math.min(1, -Math.log(player.getLocation().distance(loc) / 180));
         if (distanceMultiplier < 0) {
             distanceMultiplier = 0;
         }
