@@ -1,18 +1,4 @@
-package me.tgwaffles.positionaldiscord;/*
- * Copyright 2015-2020 Austin Keener, Michael Ritter, Florian Spieß, and the JDA contributors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+package me.tgwaffles.positionaldiscord;
 
 import net.dv8tion.jda.api.audio.AudioReceiveHandler;
 import net.dv8tion.jda.api.audio.AudioSendHandler;
@@ -108,10 +94,9 @@ public class AudioForwarder extends ListenerAdapter
      */
     private void connectToChannel(GuildMessageReceivedEvent event)
     {
-        // Note: None of these can be null due to our configuration with the JDABuilder!
-        Member member = event.getMember();                              // Member is the context of the user for the specific guild, containing voice state and roles
+        Member member = event.getMember();
         assert member != null;
-        GuildVoiceState voiceState = member.getVoiceState();            // Check the current voice state of the user
+        GuildVoiceState voiceState = member.getVoiceState();
         assert voiceState != null;
         Guild guild = voiceState.getGuild();
         VoiceChannel channel = voiceState.getChannel();
@@ -128,18 +113,17 @@ public class AudioForwarder extends ListenerAdapter
                 }
             }
         }
-                         // Use the channel the user is currently connected to
         if (channel != null) {
             plugin.log.log(Level.INFO, channel.toString());
         }
         if (channel != null)
         {
-            connectTo(channel, event.getAuthor().getId());                                         // Join the channel of the user
-            onConnecting(channel, event.getChannel());                  // Tell the user about our success
+            connectTo(channel, event.getAuthor().getId());
+            onConnecting(channel, event.getChannel());
         }
         else
         {
-            onUnknownChannel(event.getChannel()); // Tell the user about our failure
+            onUnknownChannel(event.getChannel());
         }
     }
 
@@ -153,7 +137,7 @@ public class AudioForwarder extends ListenerAdapter
      */
     private void onConnecting(VoiceChannel channel, TextChannel textChannel)
     {
-        textChannel.sendMessage("Connecting to " + channel.getName()).queue(); // never forget to queue()!
+        textChannel.sendMessage("Connecting to " + channel.getName()).queue();
     }
 
     private void onUnknownUser(MessageChannel channel, String userName) {
@@ -168,7 +152,7 @@ public class AudioForwarder extends ListenerAdapter
      */
     private void onUnknownChannel(MessageChannel channel)
     {
-        channel.sendMessage("Unable to connect to ``your voice channel``, no such channel!").queue(); // never forget to queue()!
+        channel.sendMessage("Unable to connect to ``your voice channel``, no such channel!").queue();
     }
 
     /**
@@ -181,33 +165,20 @@ public class AudioForwarder extends ListenerAdapter
     {
         Guild guild = channel.getGuild();
         closeGuild(guild);
-        // Get an audio manager for this guild, this will be created upon first use for each guild
         AudioManager audioManager = guild.getAudioManager();
 
-        // Create our Send/Receive handler for the audio connection
         AudioHandler handler = new AudioHandler(this, callerId, channel.getGuild());
         handlers.add(handler);
-        // The order of the following instructions does not matter!
 
-        // Set the sending handler to our echo system
         audioManager.setSendingHandler(handler);
-        // Set the receiving handler to the same echo system, otherwise we can't echo anything
         audioManager.setReceivingHandler(handler);
 
         audioManager.setConnectionListener(handler);
-        // Connect to the voice channel
         audioManager.openAudioConnection(channel);
     }
 
     public static class AudioHandler implements AudioSendHandler, AudioReceiveHandler, ConnectionListener
     {
-        /*
-            All methods in this class are called by JDA threads when resources are available/ready for processing.
-            The receiver will be provided with the latest 20ms of PCM stereo audio
-            Note you can receive even while setting yourself to deafened!
-            The sender will provide 20ms of PCM stereo audio (pass-through) once requested by JDA
-            When audio is provided JDA will automatically set the bot to speaking!
-         */
         private final AudioForwarder forwarder;
         private final String receiveUserId;
         public final Guild guild;
@@ -219,11 +190,9 @@ public class AudioForwarder extends ListenerAdapter
 
         }
 
-        /* Receive Handling */
-
-        @Override // combine multiple user audio-streams into a single one
+        @Override
         public boolean canReceiveCombined() {
-            // limit queue to 10 entries, if that is exceeded we can not receive more until the send system catches up
+            // we don't want combined audio, as we're manually combining from multiple guilds
             return false;
         }
 
@@ -250,11 +219,10 @@ public class AudioForwarder extends ListenerAdapter
             forwarder.handlers.remove(this);
         }
 
-        //        Disable per-user audio since we want to echo the entire channel and not specific users.
-        @Override // give audio separately for each user that is speaking
+        @Override
         public boolean canReceiveUser()
         {
-            // this is not useful if we want to echo the audio of the voice channel, thus disabled for this purpose
+            // we can always attempt to receive user audio, it will only be used if we have space for it
             return true;
         }
 
@@ -341,7 +309,6 @@ public class AudioForwarder extends ListenerAdapter
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
-                forwarder.plugin.log.log(Level.INFO, "been notified.");
             }
             for (Queue<byte[]> queue : forwarder.inputQueueMap.values()) {
                 if (!queue.isEmpty()) {
@@ -456,10 +423,7 @@ public class AudioForwarder extends ListenerAdapter
 
         private void declareComplete() {
             int newValue = forwarder.returnedTimers.incrementAndGet();
-            plugin.log.log(Level.INFO, Integer.toString(newValue));
-            plugin.log.log(Level.INFO, Integer.toString(forwarder.expectedTimers));
             if (newValue == forwarder.expectedTimers) {
-                plugin.log.log(Level.INFO, "notifying.");
                 synchronized (forwarder) {
                     forwarder.notify();
                 }
