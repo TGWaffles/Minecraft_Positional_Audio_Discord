@@ -242,7 +242,11 @@ public class AudioForwarder extends ListenerAdapter
         public boolean canProvide()
         {
             // If we have something in our buffer we can provide it to the send system
-            return !forwarder.outputQueueMap.get(receiveUserId).isEmpty();
+            Queue<byte[]> outputQueue = forwarder.outputQueueMap.get(receiveUserId);
+            if (outputQueue == null) {
+                return false;
+            }
+            return !outputQueue.isEmpty();
         }
 
         @Override

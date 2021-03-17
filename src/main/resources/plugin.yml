@@ -1,3 +1,13 @@
 name: PositionalDiscord
 main: me.tgwaffles.positionaldiscord.PositionalDiscord
 version: 1.0
+api-version: "1.15"
+
+commands:
+  radio:
+    description: Join a radio channel.
+    usage: /radio <channel>
+
+  volume:
+    description: Change a user's volume.
+    usage: /volume <user> <volume>
