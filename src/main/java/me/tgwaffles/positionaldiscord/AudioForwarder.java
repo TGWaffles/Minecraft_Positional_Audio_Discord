@@ -9,6 +9,7 @@ import net.dv8tion.jda.api.entities.*;
 import net.dv8tion.jda.api.events.message.guild.GuildMessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.managers.AudioManager;
+import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 
@@ -77,6 +78,7 @@ public class AudioForwarder extends ListenerAdapter
         UUID uuid = player.getUniqueId();
         uuidsToIds.put(uuid, discordUserId);
         idsToUUIDs.put(discordUserId, uuid);
+        plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " is connecting to audio...");
         connectToChannel(event);
     }
 

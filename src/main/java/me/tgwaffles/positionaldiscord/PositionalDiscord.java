@@ -31,6 +31,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     HashMap<Player, ArrayList<Player>> nearbyPlayers = new HashMap<>();
     HashMap<UUID, Integer> playerChannels = new HashMap<>();
     HashMap<UUID, HashMap<UUID, Integer>> playerVolumesMap = new HashMap<>();
+    HashMap<Integer, UUID> lockedChannels = new HashMap<>();
 
     public void onEnable() {
         this.saveDefaultConfig();
@@ -145,9 +146,33 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                     if (otherPlayer == null) {
                         continue;
                     }
-                    toSend.append(otherPlayer.getName()).append(": ").append(entry.getValue()).append("\n");
+                    int channelId = entry.getValue();
+                    toSend.append(otherPlayer.getName()).append(": ").append(channelId);
+                    UUID locker = lockedChannels.get(channelId);
+                    if (locker != null) {
+                        toSend.append(" (locked by").append(getServer().getOfflinePlayer(locker).getName()).append(")");
+                    }
+                    toSend.append("\n");
                 }
                 player.sendMessage(toSend.toString());
+                return true;
+            } else if (inputChannelString.equalsIgnoreCase("lock")) {
+                if (playerChannels.get(userId) == null) {
+                    player.sendMessage(ChatColor.RED + "You were not in a channel!");
+                    return false;
+                }
+                int channelId = playerChannels.get(userId);
+                if (lockedChannels.get(channelId) != null) {
+                    if (lockedChannels.get(channelId) != player.getUniqueId()) {
+                        player.sendMessage(ChatColor.RED + "You did not lock that channel!");
+                        return true;
+                    }
+                    lockedChannels.remove(channelId);
+                    player.sendMessage(ChatColor.GREEN + "Channel unlocked!");
+                    return true;
+                }
+                lockedChannels.put(channelId, player.getUniqueId());
+                player.sendMessage(ChatColor.GREEN + "Channel locked!");
                 return true;
             }
             int newChannel;
@@ -164,6 +189,11 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                     return true;
                 }
                 announcePlayerInChannel(player, channel, false);
+            }
+            UUID channelLocker = lockedChannels.get(newChannel);
+            if (channelLocker != null && channelLocker != player.getUniqueId()) {
+                player.sendMessage(ChatColor.RED + "That channel is locked.");
+                return true;
             }
             announcePlayerInChannel(player, newChannel, true);
             player.sendMessage(ChatColor.GREEN + "You have joined channel " + newChannel);
