@@ -47,7 +47,7 @@ public class AudioForwarder extends ListenerAdapter
     public AudioForwarder(PositionalDiscord caller) {
         plugin = caller;
         Timer timer = new Timer();
-        timer.schedule(new UpdateCombined(this), 0L, 10L);
+        timer.scheduleAtFixedRate(new UpdateCombined(this), 0L, 20L);
     }
 
     @Override
