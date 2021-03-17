@@ -16,7 +16,6 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class AudioForwarder extends ListenerAdapter
@@ -26,14 +25,9 @@ public class AudioForwarder extends ListenerAdapter
     private final ConcurrentHashMap<UUID, String> uuidsToIds = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, Queue<byte[]>> inputQueueMap = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, Queue<byte[]>> outputQueueMap = new ConcurrentHashMap<>();
-    public final ConcurrentLinkedQueue<AudioHandler> handlers = new ConcurrentLinkedQueue<>();
-    public AtomicInteger returnedTimers = new AtomicInteger(0);
-    public int expectedTimers = 0;
 
     public AudioForwarder(PositionalDiscord caller) {
         plugin = caller;
-        Timer timer = new Timer();
-        timer.scheduleAtFixedRate(new UpdateCombined(this), 0L, 20L);
     }
 
     @Override
@@ -168,7 +162,6 @@ public class AudioForwarder extends ListenerAdapter
         AudioManager audioManager = guild.getAudioManager();
 
         AudioHandler handler = new AudioHandler(this, callerId, channel.getGuild());
-        handlers.add(handler);
 
         audioManager.setSendingHandler(handler);
         audioManager.setReceivingHandler(handler);
@@ -182,12 +175,15 @@ public class AudioForwarder extends ListenerAdapter
         private final AudioForwarder forwarder;
         private final String receiveUserId;
         public final Guild guild;
+        public final Timer timer;
         public AudioHandler(AudioForwarder caller, String callerId, Guild guild) {
             this.guild = guild;
             forwarder = caller;
             receiveUserId = callerId;
             forwarder.plugin.log.log(Level.INFO, "registered audio");
 
+            timer = new Timer();
+            timer.scheduleAtFixedRate(new UpdateQueue(this), 0L, 20L);
         }
 
         @Override
@@ -216,7 +212,7 @@ public class AudioForwarder extends ListenerAdapter
         public void onUserSpeaking(@NotNull User user, boolean speaking) { }
 
         public void close() {
-            forwarder.handlers.remove(this);
+            this.timer.cancel();
         }
 
         @Override
@@ -267,7 +263,7 @@ public class AudioForwarder extends ListenerAdapter
 
     public static class AudioAndMultiplier {
         private final byte[] audioData;
-        private final double[] multiplier;
+        private double[] multiplier;
 
         public AudioAndMultiplier (byte[] data, double[] multiplier) {
             this.audioData = data;
@@ -285,39 +281,12 @@ public class AudioForwarder extends ListenerAdapter
         public int length() {
             return audioData.length;
         }
-    }
 
-    public static class UpdateCombined extends TimerTask {
-        final AudioForwarder forwarder;
-        public UpdateCombined(AudioForwarder forwarder) {
-            this.forwarder = forwarder;
-        }
-
-        public void run() {
-            forwarder.expectedTimers = 0;
-            forwarder.returnedTimers.set(0);
-            for (AudioHandler theirHandler : forwarder.handlers) {
-                Timer timer = new Timer();
-                timer.schedule(new UpdateQueue(theirHandler), 0L);
-                forwarder.expectedTimers++;
-            }
-            if (forwarder.expectedTimers != 0) {
-                try {
-                    synchronized (forwarder) {
-                        forwarder.wait();
-                    }
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-            for (Queue<byte[]> queue : forwarder.inputQueueMap.values()) {
-                if (!queue.isEmpty()) {
-                    try {
-                        queue.remove();
-                    } catch (NoSuchElementException ignored) {}
-                }
-            }
-
+        public void setTotalSamples(int totalSamples) {
+            double[] newMultiplier = new double[2];
+            newMultiplier[0] = multiplier[0] / totalSamples;
+            newMultiplier[1] = multiplier[1] / totalSamples;
+            this.multiplier = newMultiplier;
         }
     }
 
@@ -341,17 +310,14 @@ public class AudioForwarder extends ListenerAdapter
 
         public void run() {
             if (outputQueue.size() > 10) {
-                declareComplete();;
                 return;
             }
             Player player = plugin.getServer().getPlayer(outputUserUUID);
             if (player == null) {
-                declareComplete();
                 return;
             }
             ArrayList<Player> nearbyPlayers = plugin.nearbyPlayers.get(player);
             if (nearbyPlayers == null) {
-                declareComplete();
                 return;
             }
             ArrayList<AudioAndMultiplier> combining = new ArrayList<>();
@@ -371,14 +337,19 @@ public class AudioForwarder extends ListenerAdapter
                 byte[] lastKnownBytes = lastKnownBytesMap.get(discordId);
                 if (lastKnownBytes != null) {
                     if (lastKnownBytes == data) {
-                        continue;
+                        try {
+                            otherUserQueue.remove();
+                        } catch (NoSuchElementException ignored) {}
+                        data = otherUserQueue.peek();
+                        if (data == null) {
+                            continue;
+                        }
                     }
                 }
                 double[] multiplication = plugin.getAngularVolume(player, nearbyPlayer);
                 lastKnownBytesMap.put(discordId, data);
                 combining.add(new AudioAndMultiplier(data, multiplication));
             }
-            declareComplete();
             if (!combining.isEmpty()) {
                 byte[] combinedData = new byte[3840];
                 int maxLength = combining.stream().mapToInt(AudioAndMultiplier::length).max().getAsInt();
@@ -418,15 +389,6 @@ public class AudioForwarder extends ListenerAdapter
                     combinedData[i + 1] = (byte) (toAdd);
                 }
                 outputQueue.add(combinedData);
-            }
-        }
-
-        private void declareComplete() {
-            int newValue = forwarder.returnedTimers.incrementAndGet();
-            if (newValue == forwarder.expectedTimers) {
-                synchronized (forwarder) {
-                    forwarder.notify();
-                }
             }
         }
     }
