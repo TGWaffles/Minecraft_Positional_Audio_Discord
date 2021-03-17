@@ -34,6 +34,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     HashMap<UUID, HashMap<UUID, Integer>> playerVolumesMap = new HashMap<>();
     HashMap<Integer, UUID> lockedChannels = new HashMap<>();
     AudioForwarder forwarder;
+    int factor;
 
     public void onEnable() {
         this.saveDefaultConfig();
@@ -47,6 +48,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                 GatewayIntent.GUILD_VOICE_STATES
         );
         forwarder = new AudioForwarder(this);
+        factor = this.getConfig().getInt("factor");
         try {
             api = JDABuilder.createDefault(this.getConfig().getString("discordToken"), intents)           // Use provided token from command line arguments
                     .addEventListeners(forwarder)  // Start listening with this listener
@@ -162,6 +164,9 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                 }
                 player.sendMessage(toSend.toString());
                 return true;
+            } else if (inputChannelString.equalsIgnoreCase("reload")) {
+                configReload(player);
+                return true;
             } else if (inputChannelString.equalsIgnoreCase("lock")) {
                 if (playerChannels.get(userId) == null) {
                     player.sendMessage(ChatColor.RED + "You were not in a channel!");
@@ -262,6 +267,11 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
         }
     }
 
+    public void configReload(Player player) {
+        this.reloadConfig();
+        this.factor = this.getConfig().getInt("factor");
+    }
+
     public boolean onCommand (@NotNull CommandSender sender, @NotNull Command command, @NotNull String label,
                               String[] args) {
         if (!command.getName().equalsIgnoreCase("volume") &&
@@ -333,7 +343,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
 //        double distanceMultiplier = (180 - player.getLocation().distance(loc)) / 180;
         double distanceMultiplier;
         try {
-            distanceMultiplier = Math.min(1, Math.max(0.001, 10 / player.getLocation().distance(loc)));
+            distanceMultiplier = Math.min(1, Math.max(0.001, factor / player.getLocation().distance(loc)));
         } catch (IllegalArgumentException e) {
             distanceMultiplier = 0;
         }
