@@ -4,6 +4,7 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.OnlineStatus;
 import net.dv8tion.jda.api.entities.Activity;
+import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.utils.cache.CacheFlag;
 import org.bukkit.ChatColor;
@@ -32,6 +33,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     HashMap<UUID, Integer> playerChannels = new HashMap<>();
     HashMap<UUID, HashMap<UUID, Integer>> playerVolumesMap = new HashMap<>();
     HashMap<Integer, UUID> lockedChannels = new HashMap<>();
+    AudioForwarder forwarder;
 
     public void onEnable() {
         this.saveDefaultConfig();
@@ -44,9 +46,10 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                 // We need voice states to connect to the voice channel
                 GatewayIntent.GUILD_VOICE_STATES
         );
+        forwarder = new AudioForwarder(this);
         try {
             api = JDABuilder.createDefault(this.getConfig().getString("discordToken"), intents)           // Use provided token from command line arguments
-                    .addEventListeners(new AudioForwarder(this))  // Start listening with this listener
+                    .addEventListeners(forwarder)  // Start listening with this listener
                     .setActivity(Activity.listening("positional audio!")) // Inform users that we are jammin' it out
                     .setStatus(OnlineStatus.DO_NOT_DISTURB)     // Please don't disturb us while we're jammin'
                     .enableCache(CacheFlag.VOICE_STATE)         // Enable the VOICE_STATE cache to find a user's connected voice channel
@@ -66,6 +69,9 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     }
 
     public void onDisable() {
+        for (Guild guild : api.getGuilds()) {
+            forwarder.closeGuild(guild);
+        }
         api.shutdown();
     }
 
@@ -150,7 +156,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                     toSend.append(otherPlayer.getName()).append(": ").append(channelId);
                     UUID locker = lockedChannels.get(channelId);
                     if (locker != null) {
-                        toSend.append(" (locked by").append(getServer().getOfflinePlayer(locker).getName()).append(")");
+                        toSend.append(" (locked by ").append(getServer().getOfflinePlayer(locker).getName()).append(")");
                     }
                     toSend.append("\n");
                 }
@@ -169,10 +175,18 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
                     }
                     lockedChannels.remove(channelId);
                     player.sendMessage(ChatColor.GREEN + "Channel unlocked!");
+                    ArrayList<Player> otherPlayers = getPlayersInChannel(channelId);
+                    for (Player otherPlayer : otherPlayers) {
+                        otherPlayer.sendMessage(ChatColor.YELLOW + player.getName() + " unlocked the channel!");
+                    }
                     return true;
                 }
                 lockedChannels.put(channelId, player.getUniqueId());
                 player.sendMessage(ChatColor.GREEN + "Channel locked!");
+                ArrayList<Player> otherPlayers = getPlayersInChannel(channelId);
+                for (Player otherPlayer : otherPlayers) {
+                    otherPlayer.sendMessage(ChatColor.YELLOW + player.getName() + " locked the channel!");
+                }
                 return true;
             }
             int newChannel;
@@ -297,8 +311,8 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
         double[] output = new double[2];
         double volumeModifier = getVolumeFor(player, target);
         if (checkSharedChannels(player, target)) {
-            output[0] = volumeModifier / 2;
-            output[1] = volumeModifier / 2;
+            output[0] = volumeModifier / 2.2;
+            output[1] = volumeModifier / 2.2;
             return output;
         }
         Location loc = target.getLocation();
