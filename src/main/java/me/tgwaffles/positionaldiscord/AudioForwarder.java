@@ -327,6 +327,7 @@ public class AudioForwarder extends ListenerAdapter
 
         public void run() {
             forwarder.expectedTimers = 0;
+            forwarder.returnedTimers.set(0);
             for (AudioHandler theirHandler : forwarder.handlers) {
                 Timer timer = new Timer();
                 timer.schedule(new UpdateQueue(theirHandler), 0L);
@@ -463,7 +464,6 @@ public class AudioForwarder extends ListenerAdapter
                     forwarder.notify();
                 }
             }
-            return;
         }
     }
 }
