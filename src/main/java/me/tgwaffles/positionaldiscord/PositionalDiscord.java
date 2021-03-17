@@ -268,8 +268,12 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     }
 
     public void configReload(Player player) {
-        this.reloadConfig();
-        this.factor = this.getConfig().getInt("factor");
+        if (player.hasPermission("positionaldiscord.reload")) {
+            this.reloadConfig();
+            this.factor = this.getConfig().getInt("factor");
+        } else {
+            player.sendMessage(ChatColor.RED + "You don't have permission to do this.");
+        }
     }
 
     public boolean onCommand (@NotNull CommandSender sender, @NotNull Command command, @NotNull String label,
