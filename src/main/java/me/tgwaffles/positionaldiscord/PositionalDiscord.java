@@ -75,6 +75,11 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
             forwarder.closeGuild(guild);
         }
         api.shutdown();
+        try {
+            api.awaitStatus(JDA.Status.SHUTDOWN);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 
     public ArrayList<Player> getPlayersInChannel(int channelId) {

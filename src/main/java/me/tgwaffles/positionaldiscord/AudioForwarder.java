@@ -55,15 +55,12 @@ public class AudioForwarder extends ListenerAdapter
         AudioManager manager = guild.getAudioManager();
         AudioHandler handler = (AudioHandler) manager.getReceivingHandler();
         if (handler != null) {
+            handler.close();
             String handlerId = handler.receiveUserId;
             outputQueueMap.remove(handlerId);
             inputQueueMap.remove(handlerId);
-            UUID playerUUID = idsToUUIDs.remove(handlerId);
-            uuidsToIds.remove(playerUUID);
-            handler.close();
         }
         manager.closeAudioConnection();
-
     }
 
     private void registerUser(GuildMessageReceivedEvent event, String userName) {
@@ -72,6 +69,7 @@ public class AudioForwarder extends ListenerAdapter
             onUnknownUser(event.getChannel(), userName);
             return;
         }
+        closeGuild(event.getGuild());
         String discordUserId = event.getAuthor().getId();
         inputQueueMap.put(discordUserId, new ConcurrentLinkedQueue<>());
         outputQueueMap.put(discordUserId, new ConcurrentLinkedQueue<>());
@@ -160,7 +158,6 @@ public class AudioForwarder extends ListenerAdapter
     private void connectTo(VoiceChannel channel, String callerId)
     {
         Guild guild = channel.getGuild();
-        closeGuild(guild);
         AudioManager audioManager = guild.getAudioManager();
 
         AudioHandler handler = new AudioHandler(this, callerId, channel.getGuild());
@@ -315,6 +312,10 @@ public class AudioForwarder extends ListenerAdapter
         }
 
         public void run() {
+            if (outputQueue == null) {
+                outputQueue = forwarder.outputQueueMap.get(outputUserId);
+                return;
+            }
             if (outputQueue.size() > 10) {
                 return;
             }
