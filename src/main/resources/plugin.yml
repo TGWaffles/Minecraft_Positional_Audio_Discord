@@ -11,3 +11,11 @@ commands:
   volume:
     description: Change a user's volume.
     usage: /volume <user> <volume>
+
+  register:
+    description: Register your account to discord. Only use this when prompted to.
+    usage: /register <code>
+
+  deregister:
+    description: Unlink your Minecraft account from your Discord account.
+    usage: /deregister

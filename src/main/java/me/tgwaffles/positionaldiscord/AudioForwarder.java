@@ -6,6 +6,7 @@ import net.dv8tion.jda.api.audio.UserAudio;
 import net.dv8tion.jda.api.audio.hooks.ConnectionListener;
 import net.dv8tion.jda.api.audio.hooks.ConnectionStatus;
 import net.dv8tion.jda.api.entities.*;
+import net.dv8tion.jda.api.events.guild.voice.GuildVoiceUpdateEvent;
 import net.dv8tion.jda.api.events.message.guild.GuildMessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.managers.AudioManager;
@@ -13,22 +14,65 @@ import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 
+import javax.annotation.Nonnull;
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class AudioForwarder extends ListenerAdapter
 {
     PositionalDiscord plugin;
-    private final ConcurrentHashMap<String, UUID> idsToUUIDs = new ConcurrentHashMap<>();
+    private ConcurrentHashMap<String, UUID> idsToUUIDs = new ConcurrentHashMap<>();
+    private final String fileDir;
+    public static final char[] digits = "0123456789".toCharArray();
     private final ConcurrentHashMap<UUID, String> uuidsToIds = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, Queue<byte[]>> inputQueueMap = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, Queue<byte[]>> outputQueueMap = new ConcurrentHashMap<>();
+    private final Random random = new Random();
+
 
     public AudioForwarder(PositionalDiscord caller) {
+
         plugin = caller;
+        fileDir = plugin.getDataFolder().getAbsolutePath() + "/stored.db";
+        try {
+            loadFile();
+        } catch (IOException | ClassNotFoundException e) {
+            plugin.getLogger().log(Level.WARNING, "Couldn't open stored db. " +
+                    "Can be ignored if the plugin has never been used before.");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public void loadFile() throws IOException, ClassNotFoundException {
+        try (FileInputStream loadingFileStream = new FileInputStream(fileDir)) {
+            try (ObjectInputStream objectStream = new ObjectInputStream(loadingFileStream)) {
+                idsToUUIDs = (ConcurrentHashMap<String, UUID>) objectStream.readObject();
+                for (Map.Entry<String, UUID> entry : idsToUUIDs.entrySet()) {
+                    uuidsToIds.put(entry.getValue(), entry.getKey());
+                }
+                plugin.playerChannels = (HashMap<UUID, Integer>) objectStream.readObject();
+                plugin.playerVolumesMap = (HashMap<UUID, HashMap<UUID, Integer>>) objectStream.readObject();
+                plugin.lockedChannels = (HashMap<Integer, UUID>) objectStream.readObject();
+                plugin.registrationCodes = (HashMap<String, RegistrationData>) objectStream.readObject();
+            }
+        }
+    }
+
+    public void saveFile() throws IOException {
+        try (FileOutputStream outputFileStream = new FileOutputStream(fileDir)) {
+            try (ObjectOutputStream objectStream = new ObjectOutputStream(outputFileStream)) {
+                objectStream.writeObject(idsToUUIDs);
+                objectStream.writeObject(plugin.playerChannels);
+                objectStream.writeObject(plugin.playerVolumesMap);
+                objectStream.writeObject(plugin.lockedChannels);
+                objectStream.writeObject(plugin.registrationCodes);
+            }
+        }
     }
 
     @Override
@@ -40,14 +84,90 @@ public class AudioForwarder extends ListenerAdapter
 
         // Ignore message if bot
         if (author.isBot()) { return; }
-        if (content.equals("!echo"))
-        {
-            connectToChannel(event);
-        } else if (content.startsWith("!engage ")) {
-            String userName = content.substring("!engage ".length());
+        if (content.startsWith("!register ")) {
+            String userName = content.substring("!register ".length());
             registerUser(event, userName);
         } else if (content.startsWith("!close")) {
             closeGuild(event.getGuild());
+        }
+    }
+
+    @Override
+    public void onGuildVoiceUpdate(@Nonnull GuildVoiceUpdateEvent event) {
+        VoiceChannel joinedChannel = event.getChannelJoined();
+        if (joinedChannel == null) {
+            if (event.getChannelLeft() == null) {
+                return;
+            }
+            if (event.getChannelLeft().getName().startsWith("Proximity Voice")) {
+                Member member = event.getEntity();
+                if (!idsToUUIDs.containsKey(member.getId())) {
+                    return;
+                }
+                Player player = plugin.getServer().getPlayer(idsToUUIDs.get(member.getId()));
+                if (player != null) {
+                    plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " left audio.");
+                }
+                closeGuild(event.getChannelLeft().getGuild());
+            }
+            return;
+        }
+        if (joinedChannel.getName().startsWith("Proximity Voice")) {
+            Member member = event.getEntity();
+            if (!idsToUUIDs.containsKey(member.getId())) {
+                return;
+            }
+            Player player = plugin.getServer().getPlayer(idsToUUIDs.get(member.getId()));
+            if (player != null) {
+                plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " joined audio.");
+            }
+            connectTo(joinedChannel, member.getId());
+        }
+    }
+
+    public void onMinecraftJoin(UUID playerUUID) {
+        if (uuidsToIds.containsKey(playerUUID)) {
+            searchForAndConnectTo(uuidsToIds.get(playerUUID));
+        }
+    }
+
+    public void onMinecraftDisconnect(UUID playerUUID) {
+        if (!uuidsToIds.containsKey(playerUUID)) {
+            return;
+        }
+        String discordUserId = uuidsToIds.get(playerUUID);
+        for (Guild guild : plugin.api.getGuilds()) {
+            AudioManager manager = guild.getAudioManager();
+            AudioHandler handler = (AudioHandler) manager.getReceivingHandler();
+            if (handler == null) {
+                continue;
+            }
+            String handlerId = handler.receiveUserId;
+            if (handlerId.equals(discordUserId)) {
+                closeGuild(guild);
+            }
+        }
+    }
+
+
+    public void searchForAndConnectTo(String discordUserId) {
+        for (Guild guild : plugin.api.getGuilds()) {
+            for (VoiceChannel channel : guild.getVoiceChannels()) {
+                if (!channel.getName().startsWith("Proximity Voice")) {
+                    continue;
+                }
+                List<String> memberIdsInChannel = channel.getMembers().stream()
+                        .map(Member::getId).collect(Collectors.toList());
+                if (!memberIdsInChannel.contains(discordUserId)) {
+                    continue;
+                }
+                Player player = plugin.getServer().getPlayer(idsToUUIDs.get(discordUserId));
+                if (player != null) {
+                    plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " joined audio.");
+                }
+                plugin.getLogger().log(Level.INFO, "Connecting to channel, user id: " + discordUserId);
+                connectTo(channel, discordUserId);
+            }
         }
     }
 
@@ -71,54 +191,57 @@ public class AudioForwarder extends ListenerAdapter
         }
         closeGuild(event.getGuild());
         String discordUserId = event.getAuthor().getId();
-        inputQueueMap.put(discordUserId, new ConcurrentLinkedQueue<>());
-        outputQueueMap.put(discordUserId, new ConcurrentLinkedQueue<>());
-        UUID uuid = player.getUniqueId();
-        uuidsToIds.put(uuid, discordUserId);
-        idsToUUIDs.put(discordUserId, uuid);
-        plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " is connecting to audio...");
-        connectToChannel(event);
-    }
-
-    /**
-     * Handle command without arguments.
-     *
-     * @param event
-     *        The event for this command
-     */
-    private void connectToChannel(GuildMessageReceivedEvent event)
-    {
-        Member member = event.getMember();
-        assert member != null;
-        GuildVoiceState voiceState = member.getVoiceState();
-        assert voiceState != null;
-        Guild guild = voiceState.getGuild();
-        VoiceChannel channel = voiceState.getChannel();
-        if (channel == null) {
-            for (VoiceChannel possibleChannel : guild.getVoiceChannels()) {
-                for (Member voiceMember : possibleChannel.getMembers()) {
-                    if (voiceMember.getId().equals(member.getId())) {
-                        channel = possibleChannel;
-                        break;
-                    }
-                }
-                if (channel != null) {
-                    break;
-                }
+        TextChannel textChannel = event.getChannel();
+        if (idsToUUIDs.containsKey(discordUserId) || uuidsToIds.containsKey(player.getUniqueId())) {
+            textChannel.sendMessage("Your Minecraft account is already associated! Do /deregister in-game to " +
+                    "disassociate your account.").queue();
+            return;
+        }
+        StringBuilder code = new StringBuilder();
+        for (int i=0; i < 6; i++) {
+            code.append(digits[random.nextInt(digits.length)]);
+        }
+        plugin.registrationCodes.put(code.toString(), new RegistrationData(player.getUniqueId(), discordUserId));
+        textChannel.sendMessage("Please type `/register " + code.toString() +
+                "` in-game to finish linking your account! " +
+                "Then, join the new `Proximity Voice` voice channel!").queue();
+        boolean hasChannel = false;
+        for (VoiceChannel channel : event.getGuild().getVoiceChannels()) {
+            if (channel.getName().startsWith("Proximity Voice")) {
+                hasChannel = true;
             }
         }
-        if (channel != null) {
-            plugin.log.log(Level.INFO, channel.toString());
+        if (!hasChannel) {
+            event.getGuild().createVoiceChannel("Proximity Voice").queue();
         }
-        if (channel != null)
-        {
-            connectTo(channel, event.getAuthor().getId());
-            onConnecting(channel, event.getChannel());
+    }
+
+    public void enterAfterRegistered(RegistrationData data) {
+        UUID uuid = data.getPlayerUUID();
+        uuidsToIds.put(uuid, data.getDiscordId());
+        idsToUUIDs.put(data.getDiscordId(), uuid);
+        try {
+            saveFile();
+        } catch (IOException e) {
+            plugin.getLogger().log(Level.SEVERE, "Couldn't save user data! Restoring users won't work.");
         }
-        else
-        {
-            onUnknownChannel(event.getChannel());
+        onMinecraftJoin(uuid);
+    }
+
+    public boolean deRegister(UUID playerUUID) {
+        if (!uuidsToIds.containsKey(playerUUID)) {
+            return false;
         }
+        String discordId = uuidsToIds.get(playerUUID);
+        uuidsToIds.remove(playerUUID);
+        idsToUUIDs.remove(discordId);
+        try {
+            saveFile();
+        } catch (IOException e) {
+            plugin.getLogger().log(Level.SEVERE, "Couldn't save user data! Restoring users won't work.");
+        }
+        onMinecraftDisconnect(playerUUID);
+        return true;
     }
 
     /**
@@ -157,6 +280,8 @@ public class AudioForwarder extends ListenerAdapter
      */
     private void connectTo(VoiceChannel channel, String callerId)
     {
+        inputQueueMap.put(callerId, new ConcurrentLinkedQueue<>());
+        outputQueueMap.put(callerId, new ConcurrentLinkedQueue<>());
         Guild guild = channel.getGuild();
         AudioManager audioManager = guild.getAudioManager();
 

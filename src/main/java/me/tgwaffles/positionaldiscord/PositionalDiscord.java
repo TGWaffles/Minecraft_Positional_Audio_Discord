@@ -16,14 +16,19 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 
 import javax.security.auth.login.LoginException;
+import java.io.IOException;
 import java.util.*;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Listener {
@@ -33,6 +38,7 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     HashMap<UUID, Integer> playerChannels = new HashMap<>();
     HashMap<UUID, HashMap<UUID, Integer>> playerVolumesMap = new HashMap<>();
     HashMap<Integer, UUID> lockedChannels = new HashMap<>();
+    HashMap<String, RegistrationData> registrationCodes = new HashMap<>();
     AudioForwarder forwarder;
     int factor;
 
@@ -50,11 +56,11 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
         forwarder = new AudioForwarder(this);
         factor = this.getConfig().getInt("factor");
         try {
-            api = JDABuilder.createDefault(this.getConfig().getString("discordToken"), intents)           // Use provided token from command line arguments
-                    .addEventListeners(forwarder)  // Start listening with this listener
-                    .setActivity(Activity.listening("positional audio!")) // Inform users that we are jammin' it out
-                    .setStatus(OnlineStatus.DO_NOT_DISTURB)     // Please don't disturb us while we're jammin'
-                    .enableCache(CacheFlag.VOICE_STATE)         // Enable the VOICE_STATE cache to find a user's connected voice channel
+            api = JDABuilder.createDefault(this.getConfig().getString("discordToken"), intents)
+                    .addEventListeners(forwarder)
+                    .setActivity(Activity.listening("positional audio!"))
+                    .setStatus(OnlineStatus.ONLINE)
+                    .enableCache(CacheFlag.VOICE_STATE)
                     .build();
             api.awaitReady();
         } catch (LoginException | InterruptedException e) {
@@ -71,15 +77,11 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
     }
 
     public void onDisable() {
+        sendSave();
         for (Guild guild : api.getGuilds()) {
             forwarder.closeGuild(guild);
         }
         api.shutdown();
-        try {
-            api.awaitStatus(JDA.Status.SHUTDOWN);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
     }
 
     public ArrayList<Player> getPlayersInChannel(int channelId) {
@@ -281,22 +283,80 @@ public class PositionalDiscord extends JavaPlugin implements CommandExecutor, Li
         }
     }
 
+    public boolean handleRegisterCommand(Player player, String[] args) {
+        if (args.length != 1) {
+            return false;
+        }
+        String code = args[0];
+        if (!registrationCodes.containsKey(code)) {
+            player.sendMessage(ChatColor.RED + "Unknown code, " + code + "!");
+            return true;
+        }
+        RegistrationData data = registrationCodes.get(code);
+        if (data.getPlayerUUID() != player.getUniqueId()) {
+            player.sendMessage(ChatColor.RED + "That code is for someone else!");
+            return true;
+        }
+        forwarder.enterAfterRegistered(data);
+        player.sendMessage(ChatColor.GREEN + "Registered!");
+        registrationCodes.remove(code);
+        return true;
+    }
+
+    public boolean handleDeregisterCommand(Player player, String[] args) {
+        if (args.length != 0) {
+            return false;
+        }
+        if (!forwarder.deRegister(player.getUniqueId())) {
+            player.sendMessage(ChatColor.RED + "You were not registered!");
+            return true;
+        }
+        player.sendMessage(ChatColor.GREEN + "Successfully unregistered!");
+        return true;
+    }
+
+    private void sendSave() {
+        try {
+            forwarder.saveFile();
+        } catch (IOException e) {
+            this.getLogger().log(Level.SEVERE, "Couldn't save user data! Restoring users won't work.");
+        }
+    }
+
     public boolean onCommand (@NotNull CommandSender sender, @NotNull Command command, @NotNull String label,
                               String[] args) {
-        if (!command.getName().equalsIgnoreCase("volume") &&
-                !command.getName().equalsIgnoreCase("radio")) {
+        String[] commandsArray = {"volume", "radio", "register", "deregister"};
+        List<String> commands = Arrays.asList(commandsArray);
+        if (!commands.contains(command.getName().toLowerCase())) {
             return false;
         }
         if (!(sender instanceof Player)) {
             sender.sendMessage(ChatColor.RED + "You must be a player to execute that command!");
             return true;
         }
+        boolean outcome = false;
         if (command.getName().equalsIgnoreCase("radio")) {
-            return handleChannelCommand((Player) sender, args);
+            outcome = handleChannelCommand((Player) sender, args);
+            sendSave();
         } else if (command.getName().equalsIgnoreCase("volume")) {
-            return handleVolumeCommand((Player) sender, args);
+            outcome = handleVolumeCommand((Player) sender, args);
+            sendSave();
+        } else if (command.getName().equalsIgnoreCase("register")) {
+            return handleRegisterCommand((Player) sender, args);
+        } else if (command.getName().equalsIgnoreCase("deregister")) {
+            return handleDeregisterCommand((Player) sender, args);
         }
-        return false;
+        return outcome;
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        forwarder.onMinecraftJoin(event.getPlayer().getUniqueId());
+    }
+
+    @EventHandler
+    public void onPlayerDisconnect(PlayerQuitEvent event) {
+        forwarder.onMinecraftDisconnect(event.getPlayer().getUniqueId());
     }
 
     public ArrayList<Player> getNearbyPlayers(Player player) {
