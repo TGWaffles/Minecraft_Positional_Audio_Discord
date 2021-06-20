@@ -105,9 +105,10 @@ public class AudioForwarder extends ListenerAdapter
                     return;
                 }
                 Player player = plugin.getServer().getPlayer(idsToUUIDs.get(member.getId()));
-                if (player != null) {
-                    plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " left audio.");
+                if (player == null) {
+                    return;
                 }
+                plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " left audio.");
                 closeGuild(event.getChannelLeft().getGuild());
             }
             return;
@@ -118,9 +119,10 @@ public class AudioForwarder extends ListenerAdapter
                 return;
             }
             Player player = plugin.getServer().getPlayer(idsToUUIDs.get(member.getId()));
-            if (player != null) {
-                plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " joined audio.");
+            if (player == null) {
+                return;
             }
+            plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " joined audio.");
             connectTo(joinedChannel, member.getId());
         }
     }
@@ -162,9 +164,10 @@ public class AudioForwarder extends ListenerAdapter
                     continue;
                 }
                 Player player = plugin.getServer().getPlayer(idsToUUIDs.get(discordUserId));
-                if (player != null) {
-                    plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " joined audio.");
+                if (player == null) {
+                    return;
                 }
+                plugin.getServer().broadcastMessage(ChatColor.GRAY + player.getName() + " joined audio.");
                 plugin.getLogger().log(Level.INFO, "Connecting to channel, user id: " + discordUserId);
                 connectTo(channel, discordUserId);
             }

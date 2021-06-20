@@ -5,7 +5,7 @@ plugins {
 
 mainClassName = 'me.tgwaffles.positionaldiscord.Main.Main'
 
-version '2.0'
+version '2.1'
 def jdaVersion = '4.2.0_168'
 
 sourceCompatibility = targetCompatibility = 1.8
